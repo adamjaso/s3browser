@@ -27,6 +27,16 @@ def list_objects():
     return show_objects(objects)
 
 
+@app.route("/_watch/<path:key>")
+def video_player(key):
+    parts = key.split("/")
+    series = "/".join(parts[:-1])
+    episode = parts[-1]
+    print(series, episode)
+    objects = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=series + "/", Delimiter="/")
+    return show_videos(objects, key)
+
+
 @app.route("/_redirect/<path:key>")
 def redirect_object(key):
     url = get_s3_url(key)
@@ -83,7 +93,7 @@ td {{ padding: 5px 10px; }}
 <tr>
 <td><!-- no last modified --></td>
 <td><!-- no size --></td>
-<td><!-- no download url --></td>
+<td><a href="/_watch/{item["Prefix"]}">Watch</a></td>
 <td><a href="/{item["Prefix"]}">View</a></td>
 <td>{item["Prefix"]}</td>
 </tr>
@@ -102,6 +112,118 @@ td {{ padding: 5px 10px; }}
 </tbody>
 </table>
 </body></html>""")
+    return "\n".join(html)
+
+
+def show_videos(objects, prefix):
+    files = objects.get('Contents', [])
+    back_url = os.path.dirname(os.path.dirname(prefix[:-1]))
+    try:
+        curr_index, _ = next((i, val["Key"]) for i, val in enumerate(files) if val["Key"].endswith(prefix))
+    except StopIteration:
+        curr_index = 0
+    if curr_index > 0:
+        prev_url = files[curr_index - 1]["Key"]
+    else:
+        prev_url = "javascript:void(0);"
+    if curr_index < len(files) - 1:
+        next_url = files[curr_index + 1]["Key"]
+    else:
+        next_url = "javascript:void(0);"
+    title = os.path.basename(prefix)
+    html = []
+    html.append(f"""<!DOCTYPE html>
+<html>
+<head>
+<title>{title}</title>
+</head>
+<body>
+<div>
+<video id="player" controls="true" type="video/mp4" autoplay="autoplay" width="100%" height="auto"></video>
+<div style="margin:20px 10px">
+<a href="/{back_url}/">Home</a> |
+<a href="/_watch/{prev_url}">Previous Episode</a> |
+<a href="/_watch/{next_url}">Next Episode</a> |
+</div>
+    """)
+    for item in files:
+        #s3_url = get_s3_url(item["Key"])
+        s3_name = os.path.basename(item["Key"])
+        html.append(f"""
+<div><a class="video_url" href="{s3_name}">{s3_name}</a></div>
+        """)
+    html.append("""
+</div>
+<script>
+  window.onload = function() {
+    var video = document.getElementById("player");
+    var anchors = document.getElementsByClassName("video_url");
+    var links = [];
+    var currName = window.location.href.split("/").pop()
+    var currIndex = currName == "" ? 0 : -1;
+    for (var i = 0; i < anchors.length; i++) {
+        var link = anchors[i].href;
+        if (currIndex == -1 && link.endsWith("/" + currName)) currIndex = i;
+        links.push(link);
+    }
+    if (currIndex == -1) {
+        alert("Can't find episode '" + currName + "'.");
+        return;
+    }
+    var nextIndex = currIndex + 1;
+    var nextName = links[currIndex + 1];
+    window.addEventListener("keydown", (e => e.keyCode == 32 && e.target == document.body && e.preventDefault() || true));
+    window.addEventListener("keyup", function(e) {
+      if (e.keyCode == 70) { // when we press "f" toggle fullscreen
+        fullscreen();
+      } else if (e.keyCode == 32) { // when we press " " play/pause
+        togglePlay();
+      } else if (e.keyCode == 74) { // when we press "j" go backward 10s
+        video.currentTime -= 10;
+      } else if (e.keyCode == 76) { // when we press "l" go forward 10s
+        video.currentTime += 10;
+      }
+      e.preventDefault();
+      return false;
+    });
+    function togglePlay() {
+      video.paused ? video.play() : video.pause();
+    }
+    function fullscreen() {
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      } else {
+        video.requestFullscreen();
+      }
+    }
+    for (var i = 0; i < anchors.length; i++) {
+        anchors[i].addEventListener("click", loadVideo);
+    }
+    function getVideoURL(url) {
+      return url.replace(/\/_watch\//, "/_redirect/");
+    }
+    function loadVideo(event) {
+      event.preventDefault();
+      video.src = getVideoURL(event.target.href);
+      video.play();
+    }
+    var switching = false;
+    video.ontimeupdate = () => {
+      var remaining = video.duration - video.currentTime;
+      if (!switching && remaining < 15) {
+        switching = true;
+        console.log("Remaining threshold crossed. Loading next...");
+        if (nextIndex < links.length) {
+          window.location = links[nextIndex];
+        }
+      }
+    };
+    video.src = getVideoURL(links[currIndex]);
+    video.play();
+  };
+</script>
+</body>
+</html>""")
     return "\n".join(html)
 
 
