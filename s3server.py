@@ -3,7 +3,7 @@ import os
 import sys
 import boto3
 from botocore import errorfactory
-from flask import Flask, Response, redirect
+from flask import Flask, Response, redirect, request
 
 S3_BUCKET = os.getenv('S3_BUCKET')
 s3 = boto3.client('s3')
@@ -32,7 +32,6 @@ def video_player(key):
     parts = key.split("/")
     series = "/".join(parts[:-1])
     episode = parts[-1]
-    print(series, episode)
     objects = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=series + "/", Delimiter="/")
     return show_videos(objects, key)
 
@@ -136,6 +135,7 @@ def show_videos(objects, prefix):
 <html>
 <head>
 <title>{title}</title>
+<link rel="icon" href="data:,">
 </head>
 <body>
 <div>
@@ -158,26 +158,34 @@ def show_videos(objects, prefix):
   window.onload = function() {
     var video = document.getElementById("player");
     var anchors = document.getElementsByClassName("video_url");
-    var links = [];
-    var currName = window.location.href.split("/").pop()
-    var currIndex = currName == "" ? 0 : -1;
-    for (var i = 0; i < anchors.length; i++) {
-        var link = anchors[i].href;
-        if (currIndex == -1 && link.endsWith("/" + currName)) currIndex = i;
-        links.push(link);
-    }
-    if (currIndex == -1) {
-        alert("Can't find episode '" + currName + "'.");
+    var baseLink = window.location.href.split("/").slice(0, -1).join("/");
+    var currLink = window.location.href;
+    if (currLink.split("/").pop() == "" && localStorage[baseLink]) {
+        window.location = localStorage[baseLink];
         return;
     }
-    var nextIndex = currIndex + 1;
-    var nextName = links[currIndex + 1];
-    window.addEventListener("keydown", (e => e.keyCode == 32 && e.target == document.body && e.preventDefault() || true));
+    var currIndex = -1;
+    for (var i = 0; i < anchors.length; i++) {
+        if (currIndex == -1 && anchors[i].href == currLink) currIndex = i;
+    }
+    if (!currLink || currIndex == -1) {
+        window.location = anchors[0].href;
+        return;
+    }
+    var nextLink;
+    if (currIndex + 1 < anchors.length) nextLink = anchors[currIndex + 1].href;
+    var playTimeout;
+    window.addEventListener("keydown", function(e) {
+        if (e.keyCode == 32 && e.target == document.body) {
+            togglePlay(); // when we press " " play/pause
+            e.preventDefault();
+            return false;
+        }
+        return true;
+    });
     window.addEventListener("keyup", function(e) {
       if (e.keyCode == 70) { // when we press "f" toggle fullscreen
         fullscreen();
-      } else if (e.keyCode == 32) { // when we press " " play/pause
-        togglePlay();
       } else if (e.keyCode == 74) { // when we press "j" go backward 10s
         video.currentTime -= 10;
       } else if (e.keyCode == 76) { // when we press "l" go forward 10s
@@ -185,6 +193,12 @@ def show_videos(objects, prefix):
       }
       e.preventDefault();
       return false;
+    });
+    video.addEventListener("error", function(e) {
+        console.log(e);
+        if (confirm("An error occurred. Do you want to start the next episode?")) {
+            window.location = nextLink;
+        }
     });
     function togglePlay() {
       video.paused ? video.play() : video.pause();
@@ -196,16 +210,8 @@ def show_videos(objects, prefix):
         video.requestFullscreen();
       }
     }
-    for (var i = 0; i < anchors.length; i++) {
-        anchors[i].addEventListener("click", loadVideo);
-    }
     function getVideoURL(url) {
       return url.replace(/\/_watch\//, "/_redirect/");
-    }
-    function loadVideo(event) {
-      event.preventDefault();
-      video.src = getVideoURL(event.target.href);
-      video.play();
     }
     var switching = false;
     video.ontimeupdate = () => {
@@ -213,12 +219,13 @@ def show_videos(objects, prefix):
       if (!switching && remaining < 15) {
         switching = true;
         console.log("Remaining threshold crossed. Loading next...");
-        if (nextIndex < links.length) {
-          window.location = links[nextIndex];
+        if (nextLink) {
+            window.location = nextLink;
         }
       }
     };
-    video.src = getVideoURL(links[currIndex]);
+    localStorage[baseLink] = currLink;
+    video.src = getVideoURL(currLink);
     video.play();
   };
 </script>
